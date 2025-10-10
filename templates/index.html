@@ -1,103 +1,133 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
+
 <head>
-<meta charset="UTF-8" />
-<title>Credit Scoring Simulator Result</title>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet" />
+    <title>Groq File Processor</title>
+    <!-- Google Font -->
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+
 <style>
-  body {
-    font-family: 'Inter', sans-serif;
-    background: #f4f7f8;
-    padding: 40px 20px;
-    max-width: 700px;
-    margin: auto;
-    color: #333;
-  }
-  h1 {
-    font-weight: 600;
-    margin-bottom: 15px;
-    color: #2c3e50;
-  }
-  .result-container {
-    background: white;
-    padding: 25px;
-    border-radius: 8px;
-    box-shadow: 0 0 8px rgba(0,0,0,0.05);
-  }
-  .highlight {
-    font-weight: 700;
-    font-size: 1.1rem;
-  }
-  .score {
-    font-size: 1.3rem;
-    margin-bottom: 10px;
-  }
-  .approved {
-    color: green;
-    font-weight: 700;
-  }
-  .rejected {
-    color: red;
-    font-weight: 700;
-  }
-  ul {
-    margin-top: 10px;
-    margin-left: 20px;
-  }
-  .section-title {
-    font-weight: 600;
-    margin-top: 20px;
-    margin-bottom: 8px;
-    border-bottom: 1px solid #ccc;
-    padding-bottom: 3px;
-    color: #2c3e50;
-  }
-  .note {
-    margin-top: 20px;
-    font-style: italic;
-    color: #555;
-  }
+    body {
+        font-family: 'Inter', sans-serif;
+        background: #f4f7f8;
+        padding: 40px;
+        color: #333;
+    }
+
+    h1 {
+        color: #2c3e50;
+    }
+
+    form {
+        background: #fff;
+        padding: 25px;
+        border-radius: 8px;
+        box-shadow: 0 0 8px rgba(0,0,0,0.05);
+        margin-bottom: 30px;
+        max-width: 600px;
+    }
+
+    input[type="file"] {
+        padding: 10px;
+        margin-bottom: 15px;
+    }
+
+    button {
+        background-color: #007bff;
+        color: white;
+        padding: 10px 20px;
+        font-size: 16px;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+    }
+
+    button:hover {
+        background-color: #0056b3;
+    }
+
+    #loading {
+        font-weight: bold;
+        color: #555;
+        margin-top: 20px;
+    }
+
+    .output-section {
+        background: #ffffff;
+        padding: 25px;
+        border-radius: 8px;
+        box-shadow: 0 0 8px rgba(0,0,0,0.05);
+        max-width: 600px;
+    }
+
+    textarea {
+        width: 100%;
+        height: 300px;
+        margin-top: 20px;
+        padding: 15px;
+        font-size: 14px;
+        font-family: monospace;
+        border: 1px solid #ccc;
+        border-radius: 6px;
+        background-color: #f9f9f9;
+        resize: vertical;
+    }
+
+    .error {
+        color: #c0392b;
+        font-weight: bold;
+    }
+
+    .download-btn {
+        margin-top: 15px;
+        background-color: #28a745;
+    }
+
+    .download-btn:hover {
+        background-color: #1e7e34;
+    }
 </style>
+
 </head>
+
 <body>
+    <h1>Upload a File to Generate a To-Do List</h1>
 
-<h1>Credit Report for {{ name }}</h1>
+    <p style="max-width: 600px; color: #555; font-size: 16px;">
+        This tool uses AI to process your uploaded file in two steps:
+        <br><strong>First</strong>, it summarizes the content.
+        <br><strong>Then</strong>, it turns that summary into a clear, actionable to-do list.
+        Supported formats: <code>.txt</code>, <code>.pdf</code>, and <code>.docx</code>.
+    </p>
 
-<div class="result-container">
 
-  <div class="score">
-    <div><span class="highlight">Estimated Credit Score:</span> {{ estimated_score }}/850</div>
-    <div><span class="highlight">Score Required for Loan Approval:</span> {{ required_score }}</div>
-    <div><span class="highlight">Risk Level:</span> {{ risk_level }}</div>
-    <div>
-      <span class="highlight">Loan Approval Decision:</span> 
-      {% if loan_decision == 'Approved' %}
-        <span class="approved">Approved ✅</span>
-      {% else %}
-        <span class="rejected">Rejected ❌</span>
-      {% endif %}
+    <form id="uploadForm" action="/process" method="post" enctype="multipart/form-data">
+        <input type="file" name="file" accept=".txt,.pdf,.docx" required>
+        <button type="submit">Submit</button>
+    </form>
+
+    <div id="loading" style="display: none;">
+        <p>⏳ Processing file... please wait.</p>
     </div>
-  </div>
 
-  <div class="section-title">Key Points</div>
-  <ul>
-    {% for point in key_points %}
-      <li>{{ point }}</li>
-    {% endfor %}
-  </ul>
+    {% if error %}
+    <p style="color: red;">⚠️ {{ error }}</p>
+    {% endif %}
 
-  <div class="section-title">Reasons for this Loan Decision</div>
-  <ul>
-    {% for reason in reasons %}
-      <li>{{ reason }}</li>
-    {% endfor %}
-  </ul>
+    {% if output %}
+    <h2>📝 Generated To-Do List</h2>
+    <textarea readonly>{{ output }}</textarea>
+    <form method="post" action="/download">
+        <input type="hidden" name="text" value="{{ output|e }}">
+        <button type="submit">📥 Download Result</button>
+    </form>
+    {% endif %}
 
-  <div class="note">
-    Note: This is a simulated analysis and should not be considered an actual credit assessment.
-  </div>
-
-</div>
-
+    <script>
+        document.getElementById('uploadForm').addEventListener('submit', function () {
+            document.getElementById('loading').style.display = 'block';
+        });
+    </script>
 </body>
+
 </html>

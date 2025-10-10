@@ -1,15 +1,22 @@
-from flask import Flask, request, render_template
+from flask import Flask, request, render_template, make_response
 import os
-import requests
 from dotenv import load_dotenv
+import requests
+import fitz  # PyMuPDF
+import docx
 
+# Load environment variables
 load_dotenv()
-
-app = Flask(__name__)
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
+app = Flask(__name__)
+
+MAX_FILE_SIZE = 1 * 1024 * 1024  # 1 MB
+
+
+# Function to send prompt to Groq API
 def call_groq(prompt):
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
@@ -17,137 +24,99 @@ def call_groq(prompt):
     }
 
     payload = {
-        "model": "llama-3.3-70b-versatile",
+        "model": "llama-3.3-70b-versatile",  # ✅ Updated model
         "messages": [
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.7,
-        "max_tokens": 512
+        "max_tokens": 1024
     }
 
     response = requests.post(GROQ_API_URL, headers=headers, json=payload)
+
     if response.status_code != 200:
-        print("API ERROR:", response.text)
-        return None
+        print("❌ API ERROR:", response.text)
+        response.raise_for_status()
 
     result = response.json()
     return result["choices"][0]["message"]["content"]
 
 
-def parse_ai_response(text):
-    # Very simple parsing - split by lines, detect main sections, and format HTML
-    lines = [line.strip() for line in text.split("\n") if line.strip()]
-    
-    data = {
-        "estimated_score": "",
-        "required_score": "",
-        "risk_level": "",
-        "loan_decision": "",
-        "key_points": [],
-        "reasons": [],
-        "note": ""
-    }
-    
-    section = None
-    for line in lines:
-        # Parse Estimated Score
-        if line.lower().startswith("estimated credit score"):
-            data["estimated_score"] = line.split(":")[-1].strip()
-        elif line.lower().startswith("score required for loan approval"):
-            data["required_score"] = line.split(":")[-1].strip()
-        elif line.lower().startswith("risk level"):
-            data["risk_level"] = line.split(":")[-1].strip()
-        elif line.lower().startswith("loan approval decision"):
-            data["loan_decision"] = line.split(":")[-1].strip()
-        elif line.lower().startswith("key points"):
-            section = "key_points"
-        elif line.lower().startswith("reasons for this loan decision"):
-            section = "reasons"
-        elif line.lower().startswith("note"):
-            section = "note"
-            data["note"] = line[len("note:"):].strip()
-        else:
-            if section == "key_points" and line.startswith("-"):
-                data["key_points"].append(line[1:].strip())
-            elif section == "reasons" and line.startswith("-"):
-                data["reasons"].append(line[1:].strip())
-            elif section == "note":
-                data["note"] += " " + line
+# Extract text from file (.txt, .pdf, .docx)
+def extract_text(file):
+    filename = file.filename.lower()
 
-    return data
+    if filename.endswith('.txt'):
+        return file.read().decode('utf-8')
+
+    elif filename.endswith('.pdf'):
+        text = ""
+        with fitz.open(stream=file.read(), filetype="pdf") as doc:
+            for page in doc:
+                text += page.get_text()
+        return text
+
+    elif filename.endswith('.docx'):
+        doc = docx.Document(file)
+        return "\n".join([p.text for p in doc.paragraphs])
+
+    else:
+        raise ValueError("Unsupported file type.")
 
 
-@app.route('/', methods=['GET', 'POST'])
-def credit_simulator():
-    error = None
-    formatted_result = None
-    name = ""
-
-    if request.method == 'POST':
-        name = request.form.get('name', '').strip()
-        age = request.form.get('age', '').strip()
-        income = request.form.get('income', '').strip()
-        employment = request.form.get('employment', '').strip()
-        debts = request.form.get('debts', '').strip()
-        history = request.form.get('history', '').strip()
-        missed = request.form.get('missed', '').strip()
-
-        if not all([name, age, income, employment, debts, history, missed]):
-            error = "Please fill all fields."
-        else:
-            prompt = f"""
-You are an expert credit analyst. Given the following user data, generate a detailed credit report including:
-
-- Estimated Credit Score (out of 850)
-- Score Required for Loan Approval (assume 650)
-- Risk Level (Low, Medium, High)
-- Loan Approval Decision (Approved or Rejected)
-- Key Points (short bullet points)
-- Reasons for this loan decision (short bullet points)
-
-Format the report clearly with each item on its own line, and prefix bullet points with '-'.
-
-User Details:
-Name: {name}
-Age: {age}
-Monthly Income: ₹{income}
-Employment Status: {employment}
-Total Current Debt: ₹{debts}
-Credit History Length (years): {history}
-Missed Payments in Last 12 Months: {missed}
-"""
-            ai_response = call_groq(prompt)
-            if ai_response:
-                parsed = parse_ai_response(ai_response)
-
-                # Emoji map for risk and decision
-                risk_emoji = {
-                    "Low": "🟢",
-                    "Medium": "🟠",
-                    "High": "🔴"
-                }
-                decision_emoji = {
-                    "Approved": "✅",
-                    "Rejected": "❌"
-                }
-
-                formatted_result = {
-                    "name": name,
-                    "estimated_score": parsed["estimated_score"],
-                    "required_score": parsed["required_score"],
-                    "risk_level": parsed["risk_level"],
-                    "risk_emoji": risk_emoji.get(parsed["risk_level"], ""),
-                    "loan_decision": parsed["loan_decision"],
-                    "decision_emoji": decision_emoji.get(parsed["loan_decision"], ""),
-                    "key_points": parsed["key_points"],
-                    "reasons": parsed["reasons"],
-                    "note": parsed["note"]
-                }
-            else:
-                error = "Failed to get response from AI."
-
-    return render_template("credit_simulator.html", error=error, result=formatted_result, name=name)
+@app.route('/')
+def index():
+    return render_template("index.html")
 
 
-if __name__ == "__main__":
+@app.route('/process', methods=['POST'])
+def process():
+    if 'file' not in request.files:
+        return render_template("index.html", error="No file uploaded.")
+
+    file = request.files['file']
+
+    if file.filename == '':
+        return render_template("index.html", error="No file selected.")
+
+    if not file.filename.endswith(('.txt', '.pdf', '.docx')):
+        return render_template("index.html", error="Invalid file type. Please upload .txt, .pdf or .docx files.")
+
+    # File size check
+    file.seek(0, os.SEEK_END)
+    file_length = file.tell()
+    file.seek(0)
+    if file_length > MAX_FILE_SIZE:
+        return render_template("index.html", error="File size exceeds 1MB limit.")
+
+    try:
+        content = extract_text(file)
+
+        if not content.strip():
+            return render_template("index.html", error="File is empty or unreadable.")
+
+        # Prompt 1: Summarize
+        prompt1 = f"Summarize the following content:\n\n{content}"
+        summary = call_groq(prompt1)
+
+        # Prompt 2: Turn summary into to-do list
+        prompt2 = f"Convert this summary into a detailed to-do list:\n\n{summary}"
+        todo_list = call_groq(prompt2)
+
+        return render_template("index.html", output=todo_list)
+
+    except Exception as e:
+        return render_template("index.html", error=f"Error: {str(e)}")
+
+
+@app.route('/download', methods=['POST'])
+def download():
+    text = request.form.get("text", "")
+    response = make_response(text)
+    response.headers['Content-Disposition'] = 'attachment; filename=todo_list.txt'
+    response.mimetype = 'text/plain'
+    return response
+
+
+if __name__ == '__main__':
     app.run(debug=True)
