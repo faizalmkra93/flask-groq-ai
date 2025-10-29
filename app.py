@@ -1,122 +1,150 @@
-from flask import Flask, request, render_template, make_response
+from flask import Flask, request, render_template, redirect, url_for, session
+import sqlite3
 import os
-from dotenv import load_dotenv
 import requests
-import fitz  # PyMuPDF
-import docx
+import re
+from dotenv import load_dotenv
 
-# Load environment variables
 load_dotenv()
+
+app = Flask(__name__)
+
+DB_FILE = "survey.db"
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-app = Flask(__name__)
+app.secret_key = os.getenv("SECRET_KEY", "replace_this_with_env_secret")
 
-MAX_FILE_SIZE = 1 * 1024 * 1024  # 1 MB
+ADMIN_USERNAME = os.getenv("ADMIN_USER", "admin")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASS", "your_password_here")
 
+def create_table():
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.execute('''CREATE TABLE IF NOT EXISTS feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            email TEXT,
+            location TEXT,
+            sector TEXT,
+            needs TEXT,
+            feedback TEXT,
+            ts DATETIME DEFAULT CURRENT_TIMESTAMP
+        )''')
+create_table()
 
-# Function to send prompt to Groq API
-def call_groq(prompt):
+def get_groq_insight(location, sector):
+    prompt = (
+        f"Provide 3 top public companies or sectors to invest in {location} related to {sector}. "
+        "For each, include the company name and a short description with max of 15 words "
+        "Also include a concise market insight paragraph shortly. if the sector or location is new or invalid, please reply politely that data is not correct"
+        "Format your response as a numbered list."
+    )
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json"
     }
-
     payload = {
-        "model": "llama-3.3-70b-versatile",  # ✅ Updated model
-        "messages": [
-            {"role": "user", "content": prompt}
-        ],
+        "model": "llama-3.3-70b-versatile",
+        "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.7,
-        "max_tokens": 1024
+        "max_tokens": 400
     }
+    try:
+        resp = requests.post(GROQ_API_URL, headers=headers, json=payload, timeout=15)
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        return f"(AI insight unavailable: {str(e)})"
 
-    response = requests.post(GROQ_API_URL, headers=headers, json=payload)
+def shorten_ai_output(full_text, location, sector):
+    cleaned_text = full_text.replace("**", "")
+    cleaned_text = re.sub(r"As a neutral AI.*?before making any investment decisions\.", "", cleaned_text, flags=re.DOTALL).strip()
 
-    if response.status_code != 200:
-        print("❌ API ERROR:", response.text)
-        response.raise_for_status()
+    # Extract numbered entries with descriptions (multiline safe)
+    entries = re.findall(r"(\d+\.\s.*?(?=\n\d+\.|$))", cleaned_text, flags=re.DOTALL)
+    if len(entries) < 3:
+        return (cleaned_text[:600] + "...") if len(cleaned_text) > 600 else cleaned_text
 
-    result = response.json()
-    return result["choices"][0]["message"]["content"]
+    header = f"🚀 Top Investment Opportunities in {location} – {sector} 💼"
+    subheader = f"🔬 {sector} Sector Insights:"
 
+    cleaned_entries = [e.strip().replace("\n", " ") for e in entries[:3]]
 
-# Extract text from file (.txt, .pdf, .docx)
-def extract_text(file):
-    filename = file.filename.lower()
+    market_insight_match = re.search(r"(Market Insight[s]*:.*)", cleaned_text, flags=re.DOTALL)
+    market_insight = market_insight_match.group(1).strip() if market_insight_match else "Market insight information unavailable."
 
-    if filename.endswith('.txt'):
-        return file.read().decode('utf-8')
+    disclaimer = "\n\n*(Note: These insights reflect trends and community interests; please do your own research.)*"
 
-    elif filename.endswith('.pdf'):
-        text = ""
-        with fitz.open(stream=file.read(), filetype="pdf") as doc:
-            for page in doc:
-                text += page.get_text()
-        return text
+    output = (
+        f"{header}\n\n"
+        f"{subheader}\n\n"
+        + "\n\n".join(cleaned_entries)
+        + f"\n\n🌟 {market_insight}"
+        + disclaimer
+    )
+    return output
 
-    elif filename.endswith('.docx'):
-        doc = docx.Document(file)
-        return "\n".join([p.text for p in doc.paragraphs])
-
-    else:
-        raise ValueError("Unsupported file type.")
-
-
-@app.route('/')
+@app.route("/", methods=["GET", "POST"])
 def index():
+    if request.method == "POST":
+        name = request.form.get("name")
+        email = request.form.get("email")
+        location = request.form.get("location")
+        if location == "Other":
+            location_other = request.form.get("location_other", "").strip()
+            if location_other:
+                location = location_other
+        sector = request.form.get("sector")
+        needs = request.form.get("needs")
+        feedback = request.form.get("feedback")
+
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.execute(
+                "INSERT INTO feedback (name, email, location, sector, needs, feedback) VALUES (?, ?, ?, ?, ?, ?)",
+                (name, email, location, sector, needs, feedback)
+            )
+
+        full_ai_output = get_groq_insight(location, sector)
+        short_output = shorten_ai_output(full_ai_output, location, sector)
+        session['ai_output'] = short_output
+        return redirect(url_for("thank_you"))
+
     return render_template("index.html")
 
+@app.route("/thankyou", methods=["GET"])
+def thank_you():
+    ai_output = session.pop('ai_output', None)
+    if ai_output is None:
+        return redirect(url_for("index"))
+    return render_template("thankyou.html", ai_output=ai_output)
 
-@app.route('/process', methods=['POST'])
-def process():
-    if 'file' not in request.files:
-        return render_template("index.html", error="No file uploaded.")
+@app.route("/admin-login", methods=["GET", "POST"])
+def admin_login():
+    if request.method == "POST":
+        username = request.form.get("username")
+        password = request.form.get("password")
+        if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
+            session['logged_in'] = True
+            return redirect(url_for("admin_panel"))
+        else:
+            return render_template("login.html", error="Invalid credentials")
+    return render_template("login.html")
 
-    file = request.files['file']
+@app.route("/admin-feedback")
+def admin_panel():
+    if not session.get("logged_in"):
+        return redirect(url_for("admin_login"))
+    with sqlite3.connect(DB_FILE) as conn:
+        rows = conn.execute(
+            "SELECT name, email, location, sector, needs, feedback, ts FROM feedback ORDER BY ts DESC"
+        ).fetchall()
+    return render_template("results.html", rows=rows, enumerate=enumerate)
 
-    if file.filename == '':
-        return render_template("index.html", error="No file selected.")
+@app.route("/admin-logout")
+def admin_logout():
+    session.clear()
+    return redirect(url_for("admin_login"))
 
-    if not file.filename.endswith(('.txt', '.pdf', '.docx')):
-        return render_template("index.html", error="Invalid file type. Please upload .txt, .pdf or .docx files.")
-
-    # File size check
-    file.seek(0, os.SEEK_END)
-    file_length = file.tell()
-    file.seek(0)
-    if file_length > MAX_FILE_SIZE:
-        return render_template("index.html", error="File size exceeds 1MB limit.")
-
-    try:
-        content = extract_text(file)
-
-        if not content.strip():
-            return render_template("index.html", error="File is empty or unreadable.")
-
-        # Prompt 1: Summarize
-        prompt1 = f"Summarize the following content:\n\n{content}"
-        summary = call_groq(prompt1)
-
-        # Prompt 2: Turn summary into to-do list
-        prompt2 = f"Convert this summary into a detailed to-do list:\n\n{summary}"
-        todo_list = call_groq(prompt2)
-
-        return render_template("index.html", output=todo_list)
-
-    except Exception as e:
-        return render_template("index.html", error=f"Error: {str(e)}")
-
-
-@app.route('/download', methods=['POST'])
-def download():
-    text = request.form.get("text", "")
-    response = make_response(text)
-    response.headers['Content-Disposition'] = 'attachment; filename=todo_list.txt'
-    response.mimetype = 'text/plain'
-    return response
-
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     app.run(debug=True)
