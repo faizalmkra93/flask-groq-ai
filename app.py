@@ -1,9 +1,13 @@
-from flask import Flask, request, render_template, redirect, url_for, session
+from flask import Flask, request, render_template, redirect, url_for, session, make_response
 import sqlite3
 import os
 import requests
 import re
 from dotenv import load_dotenv
+from io import StringIO
+import csv
+from datetime import datetime
+import pytz
 
 load_dotenv()
 
@@ -29,11 +33,15 @@ def create_table():
             name TEXT NOT NULL,
             email TEXT,
             location TEXT,
+            risk TEXT,
+            investment_amount TEXT,
+            asset_types TEXT,
             sector TEXT,
             needs TEXT,
             feedback TEXT,
             ts DATETIME DEFAULT CURRENT_TIMESTAMP
         )''')
+
 create_table()
 
 
@@ -79,9 +87,7 @@ def shorten_ai_output(full_text, location, sector):
 
     header = f"🚀 Top Investment Opportunities in {location} – {sector} 💼"
     subheader = f"🔬 {sector} Sector Highlights:"
-
     market_insight = "🌟 Market Insight:\nThe sector is evolving rapidly with promising growth prospects driven by innovation, demand, and strategic developments."
-
     disclaimer = "\n\n*(Note: These insights are informational and reflect community activity; please perform your own research.)*"
 
     output = (
@@ -94,12 +100,23 @@ def shorten_ai_output(full_text, location, sector):
     return output
 
 
+class FormDict(dict):
+    # Custom dict to simulate form's getlist method in Jinja
+    def getlist(self, key):
+        val = self.get(key)
+        if val is None:
+            return []
+        if isinstance(val, list):
+            return val
+        return [val]
+
+
 @app.route("/", methods=["GET", "POST"])
 def index():
     if request.method == "POST":
         hcaptcha_response = request.form.get('h-captcha-response')
         if not hcaptcha_response:
-            return render_template("index.html", error="Please complete the CAPTCHA.", form=request.form)
+            return render_template("index.html", error="Please complete the CAPTCHA.", form=FormDict(request.form))
 
         verify_url = 'https://hcaptcha.com/siteverify'
         data = {
@@ -109,7 +126,7 @@ def index():
         resp = requests.post(verify_url, data=data)
         result = resp.json()
         if not result.get('success'):
-            return render_template("index.html", error="CAPTCHA validation failed, please try again.", form=request.form)
+            return render_template("index.html", error="CAPTCHA validation failed, please try again.", form=FormDict(request.form))
 
         name = request.form.get("name")
         email = request.form.get("email")
@@ -118,14 +135,18 @@ def index():
             location_other = request.form.get("location_other", "").strip()
             if location_other:
                 location = location_other
+        risk = request.form.get("risk")
+        investment_amount = request.form.get("investment_amount")
+        asset_types_list = request.form.getlist("asset_types")
+        asset_types = ", ".join(asset_types_list) if asset_types_list else ""
         sector = request.form.get("sector")
         needs = request.form.get("needs")
         feedback = request.form.get("feedback")
 
         with sqlite3.connect(DB_FILE) as conn:
             conn.execute(
-                "INSERT INTO feedback (name, email, location, sector, needs, feedback) VALUES (?, ?, ?, ?, ?, ?)",
-                (name, email, location, sector, needs, feedback)
+                "INSERT INTO feedback (name, email, location, risk, investment_amount, asset_types, sector, needs, feedback) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (name, email, location, risk, investment_amount, asset_types, sector, needs, feedback)
             )
 
         full_ai_output = get_groq_insight(location, sector)
@@ -133,7 +154,8 @@ def index():
         session['ai_output'] = short_output
         return redirect(url_for("thank_you"))
 
-    return render_template("index.html")
+    # On GET, pass an empty FormDict to simulate form.getlist
+    return render_template("index.html", form=FormDict())
 
 
 @app.route("/thankyou", methods=["GET"])
@@ -142,6 +164,16 @@ def thank_you():
     if ai_output is None:
         return redirect(url_for("index"))
     return render_template("thankyou.html", ai_output=ai_output)
+
+
+@app.route("/privacy-policy")
+def privacy_policy():
+    return render_template("privacy_policy.html")
+
+
+@app.route("/cookie-policy")
+def cookie_policy():
+    return render_template("cookie_policy.html")
 
 
 @app.route("/admin-login", methods=["GET", "POST"])
@@ -161,11 +193,49 @@ def admin_login():
 def admin_panel():
     if not session.get("logged_in"):
         return redirect(url_for("admin_login"))
+
     with sqlite3.connect(DB_FILE) as conn:
         rows = conn.execute(
-            "SELECT name, email, location, sector, needs, feedback, ts FROM feedback ORDER BY ts DESC"
+            "SELECT id, name, email, location, risk, investment_amount, asset_types, sector, needs, feedback, ts FROM feedback ORDER BY ts DESC"
         ).fetchall()
-    return render_template("results.html", rows=rows, enumerate=enumerate)
+
+    india_tz = pytz.timezone("Asia/Kolkata")
+    formatted_rows = []
+    for row in rows:
+        local_ts = datetime.strptime(row[10], "%Y-%m-%d %H:%M:%S")
+        local_ts = pytz.utc.localize(local_ts).astimezone(india_tz)
+        formatted_rows.append(row[:-1] + (local_ts.strftime("%d-%m-%Y %I:%M %p"),))
+
+    return render_template("results.html", rows=formatted_rows, enumerate=enumerate)
+
+
+@app.route("/admin-feedback/download")
+def admin_feedback_download():
+    if not session.get("logged_in"):
+        return redirect(url_for("admin_login"))
+
+    with sqlite3.connect(DB_FILE) as conn:
+        rows = conn.execute(
+            "SELECT id, name, email, location, risk, investment_amount, asset_types, sector, needs, feedback, ts FROM feedback ORDER BY ts DESC"
+        ).fetchall()
+
+    india_tz = pytz.timezone("Asia/Kolkata")
+
+    si = StringIO()
+    cw = csv.writer(si)
+    header = ["ID", "Name", "Email", "Location", "Risk Tolerance", "Investment Amount", "Asset Types", "Sector", "Needs", "Feedback", "Timestamp (IST)"]
+    cw.writerow(header)
+
+    for row in rows:
+        utc_dt = datetime.strptime(row[10], "%Y-%m-%d %H:%M:%S")
+        ist_dt = pytz.utc.localize(utc_dt).astimezone(india_tz).strftime("%d-%m-%Y %I:%M %p")
+        cw.writerow(list(row[:10]) + [ist_dt])
+
+    output = si.getvalue()
+    response = make_response(output)
+    response.headers["Content-Disposition"] = "attachment; filename=survey_feedback.csv"
+    response.headers["Content-type"] = "text/csv"
+    return response
 
 
 @app.route("/admin-logout")

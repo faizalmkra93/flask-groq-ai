@@ -1,33 +1,116 @@
 <!DOCTYPE html>
 <html>
+
 <head>
     <title>Survey Feedback Panel</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" />
     <style>
-        body { background: #f4f7f8; padding-top: 40px; font-family: 'Inter', sans-serif; }
-        .container { max-width: 900px; }
-        h1 { color: #1a73e8; }
+        body {
+            background: #f4f7f8;
+            padding-top: 40px;
+            font-family: 'Inter', sans-serif;
+        }
+
+        .container {
+            max-width: 900px;
+        }
+
+        h1 {
+            color: #1a73e8;
+        }
+
+        .info-note {
+            margin-bottom: 20px;
+            padding: 12px 20px;
+            background-color: #e9f1ff;
+            border-left: 5px solid #1a73e8;
+            color: #1a3c78;
+            font-weight: 500;
+            border-radius: 4px;
+        }
+
         .table-responsive {
             overflow-x: auto;
             -webkit-overflow-scrolling: touch;
             background: white;
             border-radius: 8px;
-            box-shadow: 0 0 8px rgba(0,0,0,0.04);
+            box-shadow: 0 0 8px rgba(0, 0, 0, 0.04);
+            padding-right: 0;
         }
+
         table {
             table-layout: fixed;
             width: 100%;
         }
-        th, td {
+
+        th,
+        td {
             word-wrap: break-word;
+            word-break: break-word;
             white-space: normal;
-            max-width: 200px; /* Adjust cell width */
+            vertical-align: middle;
         }
+
+        /* Column width adjustments */
+        th.idx,
+        td.idx {
+            min-width: 30px;
+            max-width: 30px;
+            text-align: center;
+        }
+
+        th.location,
+        td.location,
+        th.risk,
+        td.risk,
+        th.amount,
+        td.amount {
+            min-width: 80px;
+            max-width: 80px;
+            white-space: nowrap;
+            text-align: center;
+        }
+
+        th.name,
+        td.name,
+        th.email,
+        td.email,
+        th.pref_assets,
+        td.pref_assets,
+        th.sector,
+        td.sector {
+            max-width: 180px;
+        }
+
+        th.feedback,
+        th.needs {
+            min-width: 140px;
+            white-space: nowrap;
+        }
+
+        td.feedback,
+        td.needs {
+            max-width: 240px;
+            white-space: normal;
+            word-wrap: break-word;
+            word-break: break-word;
+        }
+
+        th.timestamp,
+        td.timestamp {
+            min-width: 120px;
+            max-width: none;
+            white-space: normal;
+            text-align: center;
+            word-break: break-word;
+        }
+
         .logout-link {
             margin-bottom: 20px;
             text-align: right;
         }
+
         .btn-logout {
             border: none;
             background-color: transparent;
@@ -37,46 +120,125 @@
             font-size: 1rem;
             text-decoration: underline;
         }
+
+        .download-container {
+            margin-bottom: 15px;
+            text-align: right;
+        }
+
+        table.table-striped tbody tr:nth-of-type(odd) {
+            background-color: #f9f9f9;
+        }
+
+        table.table-hover tbody tr:hover {
+            background-color: #e3f2fd;
+        }
+
+        thead th {
+            position: sticky;
+            top: 0;
+            background-color: white;
+            z-index: 1;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                max-width: 100%;
+                padding-left: 10px;
+                padding-right: 10px;
+            }
+
+            th,
+            td {
+                font-size: 0.85rem;
+                padding: 0.35rem 0.5rem;
+            }
+
+            .btn-logout {
+                font-size: 0.9rem;
+            }
+        }
+
+        @media (max-width: 480px) {
+
+            th,
+            td {
+                font-size: 0.75rem;
+                padding: 0.25rem 0.4rem;
+            }
+
+            .btn-logout {
+                font-size: 0.85rem;
+            }
+
+            .btn {
+                padding: 0.35rem 0.6rem;
+                font-size: 0.85rem;
+            }
+        }
     </style>
 </head>
+
 <body>
     <div class="container mx-auto">
         <div class="logout-link">
             <form action="{{ url_for('admin_logout') }}" method="get">
-                <button type="submit" class="btn-logout">Logout</button>
+                <button type="submit" class="btn-logout" aria-label="Logout">Logout</button>
             </form>
         </div>
         <h1>Survey Feedback Panel</h1>
-        <div class="table-responsive">
-            <table class="table table-bordered table-sm">
+
+        <div class="info-note" role="note">
+            This data is confidential and visible <strong>only to admins</strong>. Use the button below to download the
+            feedback as a CSV file. More export formats might be supported in future updates.
+        </div>
+
+        <div class="download-container">
+            <a href="{{ url_for('admin_feedback_download') }}" class="btn btn-outline-primary btn-sm" role="button"
+                aria-label="Download survey feedback CSV">Download CSV</a>
+        </div>
+
+        <div class="table-responsive" tabindex="0" aria-label="Survey feedback table">
+            <table class="table table-bordered table-sm align-middle table-striped table-hover">
                 <thead class="table-light">
                     <tr>
-                        <th>#</th>
-                        <th>Name</th>
-                        <th>Email</th>
-                        <th>Location</th>
-                        <th>Sector</th>
-                        <th>Needs</th>
-                        <th>Feedback</th>
-                        <th>Timestamp</th>
+                        <th class="idx" scope="col">#</th>
+                        <th class="name" scope="col">Name</th>
+                        <th class="email" scope="col">Email</th>
+                        <th class="location" scope="col">Loc.</th>
+                        <th class="risk" scope="col">Risk</th>
+                        <th class="amount" scope="col">Amount</th>
+                        <th class="pref_assets" scope="col">Pref. Assets</th>
+                        <th class="sector" scope="col">Sector</th>
+                        <th class="needs" scope="col">Needs</th>
+                        <th class="feedback" scope="col">Feedback</th>
+                        <th class="timestamp" scope="col">TS (IST)</th>
                     </tr>
                 </thead>
                 <tbody>
-                {% for idx, r in enumerate(rows, start=1) %}
+                    {% for idx, r in enumerate(rows, start=1) %}
                     <tr>
-                        <td>{{ idx }}</td>
-                        <td>{{ r[0] }}</td>
-                        <td>{{ r[1] }}</td>
-                        <td>{{ r[2] }}</td>
-                        <td>{{ r[3] }}</td>
-                        <td>{{ r[4] }}</td>
-                        <td>{{ r[5] }}</td>
-                        <td>{{ r[6] }}</td>
+                        <td class="idx">{{ idx }}</td>
+                        <td class="name">{{ r[1] }}</td>
+                        <td class="email">{{ r[2] }}</td>
+                        <td class="location">{{ r[3] }}</td>
+                        <td class="risk">{{ r[4] if r[4] else '-' }}</td>
+                        <td class="amount">{{ r[5] if r[5] else '-' }}</td>
+                        <td class="pref_assets">{{ r[6] if r[6] else '-' }}</td>
+                        <td class="sector">{{ r[7] }}</td>
+                        <td class="needs">{{ r[8] }}</td>
+                        <td class="feedback">{{ r[9] if r[9] else '-' }}</td>
+                        <td class="timestamp">
+                            {% set parts = r[10].split(' ', 1) %}
+                            {{ parts[0] }}<br>{{ parts[1] if parts|length > 1 else '' }}
+                        </td>
                     </tr>
-                {% endfor %}
+                    {% endfor %}
                 </tbody>
             </table>
         </div>
     </div>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 </body>
+
 </html>
