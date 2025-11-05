@@ -34,8 +34,8 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 # --- Admin credentials ---
-ADMIN_USERNAME = os.getenv("ADMIN_USER", "admin")
-ADMIN_PASSWORD = os.getenv("ADMIN_PASS", "your_password_here")
+ADMIN_USERNAME = os.getenv("ADMIN_USER")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASS")
 
 HCAPTCHA_SECRET_KEY = os.getenv("HCAPTCHA_SECRET_KEY")
 
