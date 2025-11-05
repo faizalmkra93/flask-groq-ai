@@ -1,5 +1,5 @@
 from flask import Flask, request, render_template, redirect, url_for, session, make_response
-import sqlite3
+from flask_sqlalchemy import SQLAlchemy
 import os
 import requests
 import re
@@ -9,48 +9,61 @@ import csv
 from datetime import datetime
 import pytz
 
+# Load environment variables
 load_dotenv()
 
 app = Flask(__name__)
 
-DB_FILE = "survey.db"
+# --- Configuration ---
+app.secret_key = os.getenv("SECRET_KEY", "replace_this_with_env_secret")
 
+# Use DATABASE_URL from .env (already in postgresql+pg8000:// format)
+db_url = os.getenv("DATABASE_URL")
+if not db_url:
+    print("⚠️  Warning: DATABASE_URL not set. Please check your .env file or Railway settings.")
+    db_url = "sqlite:///fallback.db"
+
+app.config["SQLALCHEMY_DATABASE_URI"] = db_url
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+
+# Initialize DB
+db = SQLAlchemy(app)
+
+# --- Groq AI ---
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-app.secret_key = os.getenv("SECRET_KEY", "replace_this_with_env_secret")
-
+# --- Admin credentials ---
 ADMIN_USERNAME = os.getenv("ADMIN_USER", "admin")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASS", "your_password_here")
 
 HCAPTCHA_SECRET_KEY = os.getenv("HCAPTCHA_SECRET_KEY")
 
+# --- Database Model ---
+class Feedback(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(200), nullable=False)
+    email = db.Column(db.String(200))
+    location = db.Column(db.String(200))
+    risk = db.Column(db.String(100))
+    investment_amount = db.Column(db.String(100))
+    asset_types = db.Column(db.String(300))
+    sector = db.Column(db.String(200))
+    needs = db.Column(db.String(500))
+    feedback = db.Column(db.Text)
+    ts = db.Column(db.DateTime, default=datetime.utcnow)
 
-def create_table():
-    with sqlite3.connect(DB_FILE) as conn:
-        conn.execute('''CREATE TABLE IF NOT EXISTS feedback (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            email TEXT,
-            location TEXT,
-            risk TEXT,
-            investment_amount TEXT,
-            asset_types TEXT,
-            sector TEXT,
-            needs TEXT,
-            feedback TEXT,
-            ts DATETIME DEFAULT CURRENT_TIMESTAMP
-        )''')
+# Create the table if it doesn't exist
+with app.app_context():
+    db.create_all()
 
-create_table()
-
-
+# --- Helper Functions ---
 def get_groq_insight(location, sector):
     prompt = (
         f"Provide 3 top public companies or sectors to invest in {location} related to {sector}. "
-        "For each, include the company name and a short description with max of 15 words. "
-        "Also include a concise market insight paragraph shortly. If the sector or location is new or invalid, please reply politely that data is not correct. "
-        "Format your response as a numbered list."
+        "Include company name and short description (max 15 words). "
+        "Also include a concise market insight paragraph. "
+        "Format as numbered list."
     )
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
@@ -82,26 +95,17 @@ def shorten_ai_output(full_text, location, sector):
         short_entries.append(short_desc)
 
     if not short_entries:
-        short_text = (cleaned_text[:600] + "...") if len(cleaned_text) > 600 else cleaned_text
-        return short_text
+        return (cleaned_text[:600] + "...") if len(cleaned_text) > 600 else cleaned_text
 
     header = f"🚀 Top Investment Opportunities in {location} – {sector} 💼"
     subheader = f"🔬 {sector} Sector Highlights:"
-    market_insight = "🌟 Market Insight:\nThe sector is evolving rapidly with promising growth prospects driven by innovation, demand, and strategic developments."
-    disclaimer = "\n\n*(Note: These insights are informational and reflect community activity; please perform your own research.)*"
+    market_insight = "🌟 Market Insight:\nThe sector is evolving rapidly with promising growth prospects."
+    disclaimer = "\n\n*(Note: These insights are informational; perform your own research.)*"
 
-    output = (
-        f"{header}\n\n"
-        f"{subheader}\n\n"
-        + "\n\n".join(short_entries)
-        + f"\n\n{market_insight}"
-        + disclaimer
-    )
-    return output
+    return f"{header}\n\n{subheader}\n\n" + "\n\n".join(short_entries) + f"\n\n{market_insight}{disclaimer}"
 
 
 class FormDict(dict):
-    # Custom dict to simulate form's getlist method in Jinja
     def getlist(self, key):
         val = self.get(key)
         if val is None:
@@ -111,6 +115,7 @@ class FormDict(dict):
         return [val]
 
 
+# --- Routes ---
 @app.route("/", methods=["GET", "POST"])
 def index():
     if request.method == "POST":
@@ -119,46 +124,42 @@ def index():
             return render_template("index.html", error="Please complete the CAPTCHA.", form=FormDict(request.form))
 
         verify_url = 'https://hcaptcha.com/siteverify'
-        data = {
-            'secret': HCAPTCHA_SECRET_KEY,
-            'response': hcaptcha_response
-        }
+        data = {'secret': HCAPTCHA_SECRET_KEY, 'response': hcaptcha_response}
         resp = requests.post(verify_url, data=data)
-        result = resp.json()
-        if not result.get('success'):
-            return render_template("index.html", error="CAPTCHA validation failed, please try again.", form=FormDict(request.form))
+        if not resp.json().get('success'):
+            return render_template("index.html", error="CAPTCHA validation failed.", form=FormDict(request.form))
 
+        # Collect form data
         name = request.form.get("name")
         email = request.form.get("email")
         location = request.form.get("location")
         if location == "Other":
-            location_other = request.form.get("location_other", "").strip()
-            if location_other:
-                location = location_other
+            location = request.form.get("location_other", "").strip() or location
         risk = request.form.get("risk")
         investment_amount = request.form.get("investment_amount")
-        asset_types_list = request.form.getlist("asset_types")
-        asset_types = ", ".join(asset_types_list) if asset_types_list else ""
+        asset_types = ", ".join(request.form.getlist("asset_types") or [])
         sector = request.form.get("sector")
         needs = request.form.get("needs")
         feedback = request.form.get("feedback")
 
-        with sqlite3.connect(DB_FILE) as conn:
-            conn.execute(
-                "INSERT INTO feedback (name, email, location, risk, investment_amount, asset_types, sector, needs, feedback) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (name, email, location, risk, investment_amount, asset_types, sector, needs, feedback)
-            )
+        # Save feedback
+        fb = Feedback(
+            name=name, email=email, location=location, risk=risk,
+            investment_amount=investment_amount, asset_types=asset_types,
+            sector=sector, needs=needs, feedback=feedback
+        )
+        db.session.add(fb)
+        db.session.commit()
 
         full_ai_output = get_groq_insight(location, sector)
         short_output = shorten_ai_output(full_ai_output, location, sector)
         session['ai_output'] = short_output
         return redirect(url_for("thank_you"))
 
-    # On GET, pass an empty FormDict to simulate form.getlist
     return render_template("index.html", form=FormDict())
 
 
-@app.route("/thankyou", methods=["GET"])
+@app.route("/thankyou")
 def thank_you():
     ai_output = session.pop('ai_output', None)
     if ai_output is None:
@@ -179,9 +180,7 @@ def cookie_policy():
 @app.route("/admin-login", methods=["GET", "POST"])
 def admin_login():
     if request.method == "POST":
-        username = request.form.get("username")
-        password = request.form.get("password")
-        if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
+        if request.form.get("username") == ADMIN_USERNAME and request.form.get("password") == ADMIN_PASSWORD:
             session['logged_in'] = True
             return redirect(url_for("admin_panel"))
         else:
@@ -194,18 +193,15 @@ def admin_panel():
     if not session.get("logged_in"):
         return redirect(url_for("admin_login"))
 
-    with sqlite3.connect(DB_FILE) as conn:
-        rows = conn.execute(
-            "SELECT id, name, email, location, risk, investment_amount, asset_types, sector, needs, feedback, ts FROM feedback ORDER BY ts DESC"
-        ).fetchall()
-
+    rows = Feedback.query.order_by(Feedback.ts.desc()).all()
     india_tz = pytz.timezone("Asia/Kolkata")
-    formatted_rows = []
-    for row in rows:
-        local_ts = datetime.strptime(row[10], "%Y-%m-%d %H:%M:%S")
-        local_ts = pytz.utc.localize(local_ts).astimezone(india_tz)
-        formatted_rows.append(row[:-1] + (local_ts.strftime("%d-%m-%Y %I:%M %p"),))
-
+    formatted_rows = [
+        (
+            row.id, row.name, row.email, row.location, row.risk,
+            row.investment_amount, row.asset_types, row.sector,
+            row.needs, row.feedback, row.ts.replace(tzinfo=pytz.utc).astimezone(india_tz).strftime("%d-%m-%Y %I:%M %p")
+        ) for row in rows
+    ]
     return render_template("results.html", rows=formatted_rows, enumerate=enumerate)
 
 
@@ -214,25 +210,18 @@ def admin_feedback_download():
     if not session.get("logged_in"):
         return redirect(url_for("admin_login"))
 
-    with sqlite3.connect(DB_FILE) as conn:
-        rows = conn.execute(
-            "SELECT id, name, email, location, risk, investment_amount, asset_types, sector, needs, feedback, ts FROM feedback ORDER BY ts DESC"
-        ).fetchall()
-
+    rows = Feedback.query.order_by(Feedback.ts.desc()).all()
     india_tz = pytz.timezone("Asia/Kolkata")
-
     si = StringIO()
     cw = csv.writer(si)
-    header = ["ID", "Name", "Email", "Location", "Risk Tolerance", "Investment Amount", "Asset Types", "Sector", "Needs", "Feedback", "Timestamp (IST)"]
-    cw.writerow(header)
-
+    cw.writerow(["ID", "Name", "Email", "Location", "Risk Tolerance", "Investment Amount", "Asset Types", "Sector", "Needs", "Feedback", "Timestamp (IST)"])
     for row in rows:
-        utc_dt = datetime.strptime(row[10], "%Y-%m-%d %H:%M:%S")
-        ist_dt = pytz.utc.localize(utc_dt).astimezone(india_tz).strftime("%d-%m-%Y %I:%M %p")
-        cw.writerow(list(row[:10]) + [ist_dt])
+        local_ts = row.ts.replace(tzinfo=pytz.utc).astimezone(india_tz)
+        cw.writerow([row.id, row.name, row.email, row.location, row.risk,
+                     row.investment_amount, row.asset_types, row.sector,
+                     row.needs, row.feedback, local_ts.strftime("%d-%m-%Y %I:%M %p")])
 
-    output = si.getvalue()
-    response = make_response(output)
+    response = make_response(si.getvalue())
     response.headers["Content-Disposition"] = "attachment; filename=survey_feedback.csv"
     response.headers["Content-type"] = "text/csv"
     return response
@@ -245,4 +234,9 @@ def admin_logout():
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    # Bind to Railway's port and disable debug for production
+    app.run(
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", 5000)),
+        debug=False
+    )
